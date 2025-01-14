@@ -14,6 +14,7 @@ from django.contrib.auth import get_user_model
 from datetime import datetime
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.core.paginator import Paginator, EmptyPage, PageNotAnInteger
+from .permissions import IsEditorUser, IsNewsOwnerOrReadOnly, IsCommentOwnerOrReadOnly, IsLikeOwner
 
 
 class NewsListAPIView(APIView):
@@ -25,6 +26,9 @@ class NewsListAPIView(APIView):
         return Response(serializer.data, status=status.HTTP_200_OK)
 
     def post(self, request):
+        if not request.user.is_editor:
+            return Response({"message": "Only editors can create news"}, status=status.HTTP_403_FORBIDDEN)
+        
         serializer = NewsSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save(editor=request.user)
@@ -32,28 +36,37 @@ class NewsListAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class NewsDetailAPIView(APIView):
-    permission_classes = [IsAuthenticated]
-
+    permission_classes = [IsAuthenticated, IsNewsOwnerOrReadOnly]
 
     def get(self, request, pk):
-        news = get_object_or_404(News, pk=pk)
-        comment = Comment.objects.filter(news=news)
-        serializer_comment = CommentSerializer(comment, many=True)
-        serializer = NewsSerializer(news)
-        return Response({"News":serializer.data, "Comments":serializer_comment.data}, status=status.HTTP_200_OK)
-
-    def patch(self, request, pk):
-        news = get_object_or_404(News, pk=pk)
-        serializer = NewsSerializer(news, data=request.data, partial=True)
-        if serializer.is_valid():
-            serializer.save()
+        try:
+            news = News.objects.get(pk=pk)
+            self.check_object_permissions(request, news)
+            serializer = NewsSerializer(news)
             return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except News.DoesNotExist:
+            return Response({"message": "News not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    def put(self, request, pk):
+        try:
+            news = News.objects.get(pk=pk)
+            self.check_object_permissions(request, news)
+            serializer = NewsSerializer(news, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except News.DoesNotExist:
+            return Response({"message": "News not found"}, status=status.HTTP_404_NOT_FOUND)
 
     def delete(self, request, pk):
-        news = get_object_or_404(News, pk=pk)
-        news.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+        try:
+            news = News.objects.get(pk=pk)
+            self.check_object_permissions(request, news)
+            news.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except News.DoesNotExist:
+            return Response({"message": "News not found"}, status=status.HTTP_404_NOT_FOUND)
 
 class CommentListAPIView(APIView):
     permission_classes = [IsAuthenticated]
@@ -71,30 +84,40 @@ class CommentListAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class CommentDetailAPIView(APIView):
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsCommentOwnerOrReadOnly]
 
     def get(self, request, pk):
-        comment = get_object_or_404(Comment, pk=pk)
-        serializer = CommentSerializer(comment)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-    def patch(self, request, pk):
-        comment = get_object_or_404(Comment, pk=pk)
-        serializer = CommentSerializer(comment, data=request.data, partial=True)
-        if serializer.is_valid():
-            if request.user == comment.user or request.user.is_staff:
-                serializer.save()
+        try:
+            comment = Comment.objects.get(pk=pk)
+            self.check_object_permissions(request, comment)
+            serializer = CommentSerializer(comment)
             return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Comment.DoesNotExist:
+            return Response({"message": "Comment not found"}, status=status.HTTP_404_NOT_FOUND)
+
+    def put(self, request, pk):
+        try:
+            comment = Comment.objects.get(pk=pk)
+            self.check_object_permissions(request, comment)
+            serializer = CommentSerializer(comment, data=request.data, partial=True)
+            if serializer.is_valid():
+                serializer.save()
+                return Response(serializer.data, status=status.HTTP_200_OK)
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        except Comment.DoesNotExist:
+            return Response({"message": "Comment not found"}, status=status.HTTP_404_NOT_FOUND)
 
     def delete(self, request, pk):
-        comment = get_object_or_404(Comment, pk=pk)
-        if request.user == comment.user or request.user.is_staff:
+        try:
+            comment = Comment.objects.get(pk=pk)
+            self.check_object_permissions(request, comment)
             comment.delete()
-        return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except Comment.DoesNotExist:
+            return Response({"message": "Comment not found"}, status=status.HTTP_404_NOT_FOUND)
 
 class LikeListAPIView(APIView):
-    permission_classes = [IsAdminUser]
+    permission_classes = [IsAuthenticated]
 
     def get(self, request):
         likes = Like.objects.all()
@@ -109,19 +132,16 @@ class LikeListAPIView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 class LikeAPIView(APIView):
+    permission_classes = [IsAuthenticated, IsLikeOwner]
 
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request, pk, *args, **kwargs):
-        post = get_object_or_404(News, pk=pk)
-
-        liked_post = Like.objects.filter(user = request.user, news=post)
-
-        if liked_post:
-            return Response({"message":"You have already liked the post"}, status=status.HTTP_400_BAD_REQUEST)
-        else:
-            liked_post = Like.objects.create(user = request.user, news=post)
-            return Response({"message":"You liked the post successfully"}, status=status.HTTP_201_CREATED)
+    def delete(self, request, pk):
+        try:
+            like = Like.objects.get(pk=pk)
+            self.check_object_permissions(request, like)
+            like.delete()
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        except Like.DoesNotExist:
+            return Response({"message": "Like not found"}, status=status.HTTP_404_NOT_FOUND)
 
 class LikedPostListAPIView(APIView):
 
@@ -154,19 +174,6 @@ class NewsFilterAPIView(APIView):
         serializer = NewsSerializer(news_objects, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-
-# class NewsFilterAPIView(APIView):
-#     permission_classes = [IsAuthenticated]
-
-#     def get(self, request, title):
-#         try:
-#             news = News.objects.get(title = title)
-#         except News.DoesNotExist:
-#             return Response({"message":"Not found"}, status=status.HTTP_404_NOT_FOUND)
-        
-#         news_objects = News.objects.filter(title = title)
-#         serializer = NewsSerializer(news_objects, many=True)
-#         return Response(serializer.data, status=status.HTTP_200_OK)
 
 class EditorNewsListAPIView(APIView):
     permission_classes = [IsAuthenticated]
